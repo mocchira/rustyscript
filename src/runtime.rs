@@ -3,8 +3,8 @@ use crate::{
     js_value::Function,
     Error, Module, ModuleHandle,
 };
-use deno_core::serde_json;
-use std::rc::Rc;
+use deno_core::{serde_json, PollEventLoopOptions};
+use std::{rc::Rc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 /// Represents the set of options accepted by the runtime constructor
@@ -133,36 +133,58 @@ impl Runtime {
         self.tokio
     }
 
-    /// Run the JS event loop to completion
-    /// Required when using the `_immediate` variants of functions
+    /// Advance the JS event loop by a single tick
+    /// See [`Runtime::await_event_loop`] for fully running the event loop
+    ///
+    /// Returns true if the event loop has pending work, or false if it has completed
     ///
     /// # Arguments
     /// * `options` - Options for the event loop polling, see [`deno_core::PollEventLoopOptions`]
     ///
     /// # Errors
     /// Can fail if a runtime error occurs during the event loop's execution
-    pub async fn await_event_loop(
-        &mut self,
-        options: deno_core::PollEventLoopOptions,
-    ) -> Result<(), Error> {
-        self.inner.await_event_loop(options).await
+    pub fn advance_event_loop(&mut self, options: PollEventLoopOptions) -> Result<bool, Error> {
+        self.run_async_task(
+            |runtime| async move { runtime.inner.advance_event_loop(options).await },
+        )
     }
 
-    /// Run the JS event loop to completion
+    /// Run the JS event loop to completion, or until a timeout is reached
+    /// Required when using the `_immediate` variants of functions
+    ///
+    /// # Arguments
+    /// * `options` - Options for the event loop polling, see [`deno_core::PollEventLoopOptions`]
+    /// * `timeout` - Optional timeout for the event loop
+    ///
+    /// # Errors
+    /// Can fail if a runtime error occurs during the event loop's execution
+    pub async fn await_event_loop(
+        &mut self,
+        options: PollEventLoopOptions,
+        timeout: Option<Duration>,
+    ) -> Result<(), Error> {
+        self.inner.await_event_loop(options, timeout).await
+    }
+
+    /// Run the JS event loop to completion, or until a timeout is reached
     /// Required when using the `_immediate` variants of functions
     ///
     /// This is the blocking variant of [`Runtime::await_event_loop`]
     ///
     /// # Arguments
     /// * `options` - Options for the event loop polling, see [`deno_core::PollEventLoopOptions`]
+    /// * `timeout` - Optional timeout for the event loop
     ///
     /// # Errors
     /// Can fail if a runtime error occurs during the event loop's execution
     pub fn block_on_event_loop(
         &mut self,
         options: deno_core::PollEventLoopOptions,
+        timeout: Option<Duration>,
     ) -> Result<(), Error> {
-        self.run_async_task(|runtime| async move { runtime.await_event_loop(options).await })
+        self.run_async_task(
+            |runtime| async move { runtime.await_event_loop(options, timeout).await },
+        )
     }
 
     /// Encode an argument as a json value for use as a function argument
@@ -752,7 +774,9 @@ impl Runtime {
     /// Executes the given module, and returns a handle allowing you to extract values
     /// And call functions
     ///
-    /// Blocks until the module has been executed
+    /// Blocks until the module has been executed AND the event loop has fully resolved
+    /// See [`Runtime::load_module_async`] for a non-blocking variant, or use with async
+    /// background tasks
     ///
     /// # Arguments
     /// * `module` - A `Module` object containing the module's filename and contents.
@@ -778,13 +802,21 @@ impl Runtime {
     /// # }
     /// ```
     pub fn load_module(&mut self, module: &Module) -> Result<ModuleHandle, Error> {
-        self.run_async_task(|runtime| async move { runtime.load_module_async(module).await })
+        self.run_async_task(|runtime| async move {
+            let handle = runtime.load_module_async(module).await;
+            runtime
+                .await_event_loop(PollEventLoopOptions::default(), None)
+                .await?;
+            handle
+        })
     }
 
     /// Executes the given module, and returns a handle allowing you to extract values
     /// And call functions
     ///
     /// Returns a future that resolves to the handle for the loaded module
+    /// Makes no attempt to fully resolve the event loop - call [`Runtime::await_event_loop`]
+    /// to resolve background tasks and async listeners
     ///
     /// # Arguments
     /// * `module` - A `Module` object containing the module's filename and contents.
@@ -804,7 +836,9 @@ impl Runtime {
     /// Executes the given module, and returns a handle allowing you to extract values
     /// And call functions.
     ///
-    /// Blocks until the module has been executed
+    /// Blocks until all modules have been executed AND the event loop has fully resolved
+    /// See [`Runtime::load_module_async`] for a non-blocking variant, or use with async
+    /// background tasks
     ///
     /// This will load 'module' as the main module, and the others as side-modules.
     /// Only one main module can be loaded per runtime
@@ -839,7 +873,11 @@ impl Runtime {
         side_modules: Vec<&Module>,
     ) -> Result<ModuleHandle, Error> {
         self.run_async_task(move |runtime| async move {
-            runtime.load_modules_async(module, side_modules).await
+            let handle = runtime.load_modules_async(module, side_modules).await;
+            runtime
+                .await_event_loop(PollEventLoopOptions::default(), None)
+                .await?;
+            handle
         })
     }
 
@@ -847,6 +885,8 @@ impl Runtime {
     /// And call functions.
     ///
     /// Returns a future that resolves to the handle for the loaded module
+    /// Makes no attempt to resolve the event loop - call [`Runtime::await_event_loop`] to
+    /// resolve background tasks and async listeners
     ///
     /// This will load 'module' as the main module, and the others as side-modules.
     /// Only one main module can be loaded per runtime

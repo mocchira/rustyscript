@@ -3,7 +3,7 @@ name = "rustyscript"
 description = "Effortless JS Integration for Rust"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-version = "0.8.3"
+version = "0.9.0"
 repository = "https://github.com/rscarson/rustyscript"
 
 keywords = ["rust", "javascript", "deno", "runtime", "embedding"]
@@ -26,7 +26,7 @@ all = ["web", "io", "webstorage", "cache", "websocket"]
 # The primary use-case for this is for creating a runtime using a deno_core version incompatible with the deno extensions
 # And for the sake of those googling it:
 # `setTimeout is not enabled in this environment` is happening because neither this feature nor the web feature are enabled
-web_stub = ["webidl"]
+web_stub = ["webidl", "base64-simd"]
 
 #
 # Each feature in this section corresponds to a different deno extension
@@ -83,20 +83,20 @@ worker = []
 #
 
 [dependencies]
-thiserror = "1.0.63"
-serde = "1.0.210"
+thiserror = "1.0.65"
+serde = "1.0.214"
 
 # Used to generate identifiers for callbacks
 paste = "1.0.15"
 
 # The deno runtime itself, and the webidl extension for the web APIs
-deno_core = "0.313.0"
+deno_core = "0.314.2"
 
 # For transpiling typescript
-deno_ast = { version = "0.42.2", features = ["transpiling"]}
+deno_ast = { version = "0.43.3", features = ["transpiling"]}
 
 # Runtime for async tasks
-tokio = "=1.36.0"
+tokio = "=1.41.0"
 tokio-util = "0.7.12"
 
 # For URL imports
@@ -108,29 +108,34 @@ http = { version = "1.1.0", optional = true }
 # Dependencies for the various extension features
 #
 
-deno_cache      = {version = "0.104.0", optional = true}
-deno_console    = {version = "0.172.0", optional = true}
-deno_crypto     = {version = "0.186.0", optional = true}
-deno_fetch      = {version = "0.196.0", optional = true}
-deno_net        = {version = "0.164.0", optional = true}
-deno_tls        = {version = "0.159.0", optional = true} # Options for the web feature
-deno_url        = {version = "0.172.0", optional = true}
+deno_cache      = {version = "0.107.0", optional = true}
+deno_console    = {version = "0.175.0", optional = true}
+deno_crypto     = {version = "0.189.0", optional = true}
+deno_fetch      = {version = "0.199.0", optional = true}
+deno_net        = {version = "0.167.0", optional = true}
+deno_tls        = {version = "0.162.0", optional = true} # Options for the web feature
+deno_url        = {version = "0.175.0", optional = true}
 
-deno_web        = {version = "0.203.0", optional = true}
-deno_webidl     = {version = "0.172.0", optional = true}
-deno_webstorage = {version = "0.167.0", optional = true}
-deno_websocket  = {version = "0.177.0", optional = true }
+deno_web        = {version = "0.206.0", optional = true}
+deno_webidl     = {version = "0.175.0", optional = true}
+deno_webstorage = {version = "0.170.0", optional = true}
+deno_websocket  = {version = "0.180.0", optional = true }
 
-deno_io         = {version = "0.82.0", optional = true}
-
-deno_unsync = "0.4.1"
+deno_io         = {version = "0.85.0", optional = true}
 
 # Dependencies for the IO feature
 rustyline = {version = "=14.0.0", optional = true}
-winapi = {version = "=0.3.9", optional = true, features = ["commapi", "knownfolders", "mswsock", "objbase", "psapi", "shlobj", "tlhelp32", "winbase", "winerror", "winuser", "winsock2", "processenv", "wincon", "wincontypes", "consoleapi"]}
+winapi = {version = "=0.3.9", optional = true, features = [
+    "commapi", "knownfolders", "mswsock", "objbase", "psapi", "shlobj", 
+    "tlhelp32", "winbase", "winerror", "winuser", "winsock2", "processenv", 
+    "wincon", "wincontypes", "consoleapi"
+]}
 nix = {version = "=0.29.0", optional = true, features = ["term"]}
-libc = {version = "0.2.160", optional = true}
-once_cell = {version = "1.19.0", optional = true}
+libc = {version = "0.2.161", optional = true}
+once_cell = {version = "1.20.2", optional = true}
+
+# Dependencies for the web stub feature
+base64-simd = {version = "0.8.0", optional = true}
 
 [dev-dependencies]
 version-sync = "0.9.5"

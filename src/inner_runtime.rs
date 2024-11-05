@@ -5,12 +5,15 @@ use crate::{
     transpiler::{transpile, transpile_extension},
     Error, ExtensionOptions, Module, ModuleHandle,
 };
-use deno_core::{serde_json, serde_v8::from_v8, v8, JsRuntime, PollEventLoopOptions};
+use deno_core::{
+    futures::FutureExt, serde_json, serde_v8::from_v8, v8, JsRuntime, PollEventLoopOptions,
+};
 use serde::de::DeserializeOwned;
 use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
     rc::Rc,
+    task::Poll,
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -305,8 +308,36 @@ impl InnerRuntime {
     }
 
     /// Runs the JS event loop to completion
-    pub async fn await_event_loop(&mut self, options: PollEventLoopOptions) -> Result<(), Error> {
-        Ok(self.deno_runtime.run_event_loop(options).await?)
+    pub async fn await_event_loop(
+        &mut self,
+        options: PollEventLoopOptions,
+        timeout: Option<Duration>,
+    ) -> Result<(), Error> {
+        if let Some(timeout) = timeout {
+            Ok(tokio::select! {
+                r = self.deno_runtime.run_event_loop(options) => r,
+                () = tokio::time::sleep(timeout) => Ok(()),
+            }?)
+        } else {
+            Ok(self.deno_runtime.run_event_loop(options).await?)
+        }
+    }
+
+    /// Advances the JS event loop by one tick
+    /// Return true if the event loop is pending
+    pub async fn advance_event_loop(
+        &mut self,
+        options: PollEventLoopOptions,
+    ) -> Result<bool, Error> {
+        let result = std::future::poll_fn(|cx| {
+            Poll::Ready(match self.deno_runtime.poll_event_loop(cx, options) {
+                Poll::Ready(t) => t.map(|()| false),
+                Poll::Pending => Ok(true),
+            })
+        })
+        .await?;
+
+        Ok(result)
     }
 
     /// Evaluate a piece of non-ECMAScript-module JavaScript code
@@ -518,6 +549,54 @@ impl InnerRuntime {
         }
     }
 
+    /// A utility function that run provided future concurrently with the event loop.
+    ///
+    /// If the event loop resolves while polling the future, it will continue to be polled,
+    /// Unless it returned an error
+    ///
+    /// Useful for interacting with local inspector session.
+    pub async fn with_event_loop_future<'fut, T, E>(
+        &mut self,
+        mut fut: impl std::future::Future<Output = Result<T, E>> + Unpin + 'fut,
+        poll_options: PollEventLoopOptions,
+    ) -> Result<T, Error>
+    where
+        deno_core::error::AnyError: From<E>,
+        Error: std::convert::From<E>,
+    {
+        // Manually implement tokio::select
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(t) = fut.poll_unpin(cx) {
+                return if let Poll::Ready(Err(e)) =
+                    self.deno_runtime.poll_event_loop(cx, poll_options)
+                {
+                    // Run one more tick to check for errors
+                    Poll::Ready(Err(e.into()))
+                } else {
+                    // No errors - continue
+                    Poll::Ready(t.map_err(Into::into))
+                };
+            }
+
+            if let Poll::Ready(Err(e)) = self.deno_runtime.poll_event_loop(cx, poll_options) {
+                // Event loop failed
+                return Poll::Ready(Err(e.into()));
+            }
+
+            if self
+                .deno_runtime
+                .poll_event_loop(cx, poll_options)
+                .is_ready()
+            {
+                // Event loop resolved - continue
+                println!("Event loop resolved");
+            }
+
+            Poll::Pending
+        })
+        .await
+    }
+
     /// Get the entrypoint function for a module
     pub fn get_module_entrypoint(
         &mut self,
@@ -591,11 +670,9 @@ impl InnerRuntime {
                 sourcemap.map(|s| s.to_vec()),
             );
 
-            let result = self.deno_runtime.mod_evaluate(s_modid);
-            self.deno_runtime
-                .run_event_loop(PollEventLoopOptions::default())
+            let mod_load = self.deno_runtime.mod_evaluate(s_modid);
+            self.with_event_loop_future(mod_load, PollEventLoopOptions::default())
                 .await?;
-            result.await?;
             module_handle_stub = ModuleHandle::new(side_module, s_modid, None);
         }
 
@@ -618,14 +695,9 @@ impl InnerRuntime {
             );
 
             // Finish execution
-            let result = self.deno_runtime.mod_evaluate(module_id);
-            self.deno_runtime
-                .run_event_loop(PollEventLoopOptions {
-                    wait_for_inspector: false,
-                    ..Default::default()
-                })
+            let mod_load = self.deno_runtime.mod_evaluate(module_id);
+            self.with_event_loop_future(mod_load, PollEventLoopOptions::default())
                 .await?;
-            result.await?;
             module_handle_stub = ModuleHandle::new(module, module_id, None);
         }
 
@@ -804,6 +876,19 @@ mod test_inner_runtime {
         });
     }
 
+    #[cfg(feature = "web_stub")]
+    #[test]
+    fn test_base64() {
+        let mut runtime = InnerRuntime::new(RuntimeOptions::default(), CancellationToken::new())
+            .expect("Could not load runtime");
+
+        let result: String = runtime.eval("btoa('foo')").expect("Could not eval");
+        assert_eq!(result, "Zm9v");
+
+        let result: String = runtime.eval("atob(btoa('foo'))").expect("Could not eval");
+        assert_eq!(result, "foo");
+    }
+
     #[test]
     fn test_get_value_ref() {
         let module = Module::new(
@@ -971,7 +1056,12 @@ mod test_inner_runtime {
             .expect("Could not load runtime");
 
         let rt = &mut runtime;
-        let module = run_async_task(|| async move { rt.load_modules(Some(&module), vec![]).await });
+        let module = run_async_task(|| async move {
+            let h = rt.load_modules(Some(&module), vec![]).await;
+            rt.await_event_loop(PollEventLoopOptions::default(), None)
+                .await?;
+            h
+        });
 
         let f = runtime.get_function_by_name(Some(&module), "test").unwrap();
         let rt = &mut runtime;
@@ -1095,6 +1185,37 @@ mod test_inner_runtime {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_async_load_errors() {
+        let module = Module::new(
+            "test.js",
+            "
+            throw new Error('msg');
+        ",
+        );
+
+        let mut runtime = InnerRuntime::new(RuntimeOptions::default(), CancellationToken::new())
+            .expect("Could not load runtime");
+
+        let rt = &mut runtime;
+        let module_ = module.clone();
+        let result =
+            run_async_task(
+                || async move { Ok(rt.load_modules(Some(&module_), vec![]).await.is_err()) },
+            );
+        assert!(result);
+
+        let mut runtime = InnerRuntime::new(RuntimeOptions::default(), CancellationToken::new())
+            .expect("Could not load runtime");
+
+        let rt = &mut runtime;
+        let result =
+            run_async_task(
+                || async move { Ok(rt.load_modules(None, vec![&module]).await.is_err()) },
+            );
+        assert!(result);
     }
 
     #[test]

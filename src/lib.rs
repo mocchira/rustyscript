@@ -25,7 +25,6 @@
 //!     "test.js",
 //!     "
 //!     export default (string, integer) => {
-//!         console.log(`Hello world: string=${string}, integer=${integer}`);
 //!         return 2;
 //!     }
 //!     "

@@ -308,7 +308,6 @@ mod test_runtime {
         let module = Module::new(
             "test.js",
             "
-            console.log('test');
             export const value = 3;
             export function func() { return 4; }
         ",

@@ -131,7 +131,6 @@ mod runtime_macros {
     /// # fn main() -> Result<(), rustyscript::Error> {
     /// let module = Module::new("test.js", "
     ///     function load(a, b) {
-    ///         console.log(`Hello world: a=${a}, b=${b}`);
     ///     }
     ///     rustyscript.register_entrypoint(load);
     /// ");
@@ -167,7 +166,6 @@ mod runtime_macros {
     /// # fn main() -> Result<(), rustyscript::Error> {
     /// let module = Module::new("test.js", "
     ///     function load(a, b) {
-    ///         console.log(`Hello world: a=${a}, b=${b}`);
     ///     }
     ///     rustyscript.register_entrypoint(load);
     /// ");
